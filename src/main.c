@@ -18,10 +18,21 @@ typedef struct {
     char sd_root[RNG_PATH_MAX];
     rng_search_state_t rng;
     int selected_hit;
+    int scroll_hit;
     int selected_title;
     bool shiny_only;
     char status_msg[128];
 } rng_app_t;
+
+static void sync_rng_scroll(rng_app_t *app) {
+    int vis = 7;
+    if (app->rng.hit_count <= vis) {
+        app->scroll_hit = 0;
+        return;
+    }
+    if (app->selected_hit < app->scroll_hit) app->scroll_hit = app->selected_hit;
+    else if (app->selected_hit >= app->scroll_hit + vis) app->scroll_hit = app->selected_hit - vis + 1;
+}
 
 static void rng_app_init(rng_app_t *app, const char *sd_root) {
     memset(app, 0, sizeof(*app));
@@ -35,15 +46,17 @@ static void rng_app_init(rng_app_t *app, const char *sd_root) {
     snprintf(app->status_msg, sizeof(app->status_msg),
              "TSV:%04u G7TID:%06u | %d RNG FRAMES FOUND",
              (unsigned)app->rng.tsv, (unsigned)app->rng.g7tid, hits);
+    pk_log_event(app->sd_root, "rngtool", "INFO", app->status_msg);
 }
 
 static void rng_app_step(rng_app_t *app, const pk_input_t *in) {
-    if ((in->down & PK_BTN_DUP) && app->selected_hit > 0) {
-        app->selected_hit--;
+    if ((in->down & PK_BTN_DUP) && app->rng.hit_count > 0) {
+        app->selected_hit = (app->selected_hit > 0) ? (app->selected_hit - 1) : (app->rng.hit_count - 1);
     }
-    if ((in->down & PK_BTN_DDOWN) && app->selected_hit + 1 < app->rng.hit_count) {
-        app->selected_hit++;
+    if ((in->down & PK_BTN_DDOWN) && app->rng.hit_count > 0) {
+        app->selected_hit = (app->selected_hit + 1 < app->rng.hit_count) ? (app->selected_hit + 1) : 0;
     }
+    sync_rng_scroll(app);
     if (in->down & PK_BTN_DLEFT) {
         app->rng.initial_seed -= 0x100u;
         rng_search_frames(&app->rng, 25000u, app->shiny_only);
@@ -66,7 +79,16 @@ static void rng_app_step(rng_app_t *app, const pk_input_t *in) {
     if (in->down & PK_BTN_R) {
         app->selected_title = (app->selected_title + 1) % 4;
     }
-    if (in->down & PK_BTN_A || in->down & PK_BTN_X) {
+    bool write_cheats = (in->down & PK_BTN_A || in->down & PK_BTN_X) != 0;
+    if (in->touch_just_pressed && in->touch_x >= 16 && in->touch_x <= 304 &&
+        in->touch_y >= 48 && in->touch_y < 176) {
+        int row = (in->touch_y - 48) / 32;
+        if (row >= 0 && row < 4) {
+            if (app->selected_title == row) write_cheats = true;
+            else app->selected_title = row;
+        }
+    }
+    if (write_cheats) {
         char out_path[RNG_PATH_MAX + 96];
         if (rng_write_luma_cheats(app->sd_root,
                                   k_cheat_titles[app->selected_title].tid,
@@ -74,6 +96,7 @@ static void rng_app_step(rng_app_t *app, const pk_input_t *in) {
                                   out_path, sizeof(out_path))) {
             snprintf(app->status_msg, sizeof(app->status_msg),
                      "WROTE LUMA CHEATS: %s", k_cheat_titles[app->selected_title].tid);
+            pk_log_event(app->sd_root, "rngtool", "INFO", app->status_msg);
         }
     }
 }
@@ -94,24 +117,28 @@ static void rng_app_render(const rng_app_t *app) {
     pk_draw_rect(8, 52, 384, 152, PK_RGBA8(32, 22, 48, 255));
     pk_draw_rect_outline(8, 52, 384, 152, 1.0f, PK_RGBA8(140, 95, 215, 255));
 
-    for (int i = 0; i < app->rng.hit_count && i < 7; i++) {
-        const rng_frame_hit_t *h = &app->rng.hits[i];
-        float y = 58.0f + (float)i * 20.0f;
-        if (i == app->selected_hit) {
-            pk_draw_rect(12.0f, y - 2.0f, 376.0f, 18.0f, PK_RGBA8(78, 48, 122, 255));
+    for (int row = 0; row < 7; row++) {
+        int idx = app->scroll_hit + row;
+        if (idx >= app->rng.hit_count) break;
+        const rng_frame_hit_t *h = &app->rng.hits[idx];
+        float y = 58.0f + (float)row * 20.0f;
+        if (idx == app->selected_hit) {
+            pk_draw_rect(12.0f, y - 2.0f, 368.0f, 18.0f, PK_RGBA8(78, 48, 122, 255));
         }
         snprintf(line, sizeof(line),
-                 "F:%5u %s PID:%08X IV:%2u/%2u/%2u/%2u/%2u/%2u NAT:%2u",
-                 (unsigned)h->frame,
+                 "%02d.F:%5u %s PID:%08X IV:%2u/%2u/%2u/%2u/%2u/%2u NAT:%2u",
+                 idx + 1, (unsigned)h->frame,
                  h->is_square_shiny ? "SQ*" : (h->is_shiny ? "SH*" : "   "),
                  (unsigned)h->pid,
                  (unsigned)h->ivs[0], (unsigned)h->ivs[1], (unsigned)h->ivs[2],
                  (unsigned)h->ivs[3], (unsigned)h->ivs[4], (unsigned)h->ivs[5],
                  (unsigned)h->nature);
-        pk_draw_text(16.0f, y + 2.0f, 0.45f,
+        pk_draw_text(16.0f, y + 2.0f, 0.43f,
                      h->is_shiny ? PK_RGBA8(255, 230, 90, 255) : PK_RGBA8(225, 220, 240, 255),
                      line);
     }
+    pk_draw_scrollbar(384.0f, 56.0f, 144.0f, app->rng.hit_count, 7, app->scroll_hit,
+                      PK_RGBA8(42, 28, 64, 255), PK_RGBA8(255, 215, 95, 255));
 
     pk_draw_rect(0, 216, 400, 24, PK_RGBA8(36, 20, 56, 255));
     pk_draw_text(8, 222, 0.48f, PK_RGBA8(130, 250, 180, 255), app->status_msg);

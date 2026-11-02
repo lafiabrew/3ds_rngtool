@@ -43,6 +43,11 @@ int main(void) {
     assert(stat(cheat_path, &sb) == 0 && sb.st_size > 64);
     assert(stat(bak_path, &sb) == 0 && sb.st_size > 64);
 
+    /* Fail-the-Fail negative assertions */
+    assert(rng_search_frames(NULL, 100u, false) == 0);
+    assert(rng_write_luma_cheats(NULL, "00040000001B5000", "Test", NULL, 0) == false);
+    assert(rng_write_luma_cheats("build/test_sd", "", "Test", NULL, 0) == false);
+
     printf("PASS: test_rngtool all TSV/G7TID, LCRNG shiny search, and Luma cheats.txt checks succeeded.\n");
     return 0;
 }
